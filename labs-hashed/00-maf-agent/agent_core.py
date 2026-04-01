@@ -2,35 +2,38 @@
 agent_core.py — MAFAgent Reusable Class
 ========================================
 
-This module extracts the core agent logic from agent.py into a reusable
-class that can be called from:
-  - app.py (Streamlit UI)
-  - agent.py (CLI script)
-  - any other interface (API, tests, notebooks...)
+REFACTOR v2 — AsyncRunner Pattern (April 2026)
+-----------------------------------------------
+PROBLEM with v1 (nest_asyncio + shared event loop):
+  After ~10 interactions, the shared event loop accumulated state:
+  - Pending WAL flush tasks retrying failed backend calls
+  - aiohttp connection pool exhaustion
+  - asyncio.sleep() coroutines not GC'd
+  Result: WAL flush fails silently → logs stop appearing in hashed logs list
+  Workaround: F5 (creates new event loop) — NOT acceptable in production.
+
+SOLUTION — Dedicated background thread with its own event loop (AsyncRunner):
+  - All Hashed SDK operations run in a DEDICATED background thread
+  - Main thread stays sync (no nest_asyncio needed)
+  - asyncio.run_coroutine_threadsafe() correctly propagates exceptions
+  - NO belt-and-suspenders needed for denied tools — exceptions work!
+  - Event loop stays clean indefinitely (no state accumulation)
+  - WAL flush runs in the dedicated loop, unaffected by main thread
 
 DESIGN PATTERN: "Core / Shell"
   Core  → agent_core.py  (pure logic, no I/O)
   Shell → app.py, agent.py (UI layer, decides how to display)
-
-WHAT THIS CLASS DOES:
-  1. Initializes Hashed SDK (identity + policies)
-  2. Connects to Azure AI Agents
-  3. Creates and persists the Azure AI Agent (reused across conversations)
-  4. Exposes a chat(message) method that:
-       a. Sends the message to the agent
-       b. Polls the run loop
-       c. Dispatches tool calls through Hashed guards
-       d. Returns structured response with metadata
 """
 
 import asyncio
+import base64
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-import nest_asyncio
 from dotenv import load_dotenv
 
 # ── Azure AI Agents SDK ───────────────────────────────────────────────────────
@@ -42,7 +45,7 @@ from azure.ai.agents.models import (
     ToolOutput,
     ToolSet,
 )
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+from azure.identity import DefaultAzureCredential
 
 # ── Hashed SDK ────────────────────────────────────────────────────────────────
 from hashed import HashedConfig, HashedCore, load_or_create_identity
@@ -51,7 +54,65 @@ from hashed import HashedConfig, HashedCore, load_or_create_identity
 from tools import init_tools, TOOLS
 
 load_dotenv()
-nest_asyncio.apply()
+
+
+# =============================================================================
+# AsyncRunner — Dedicated background event loop
+# =============================================================================
+
+class AsyncRunner:
+    """
+    Runs all async SDK operations in a dedicated background thread.
+
+    WHY THIS EXISTS:
+      The Hashed SDK is fully async (aiohttp, asyncio tasks, WAL flush).
+      Streamlit and Azure AI Agents dispatch are synchronous.
+
+      The naive solution (nest_asyncio + shared loop) causes state
+      accumulation: after ~10 interactions, pending WAL flush tasks and
+      exhausted aiohttp connections make the shared loop "dirty".
+      Logs stop appearing in hashed logs list. F5 "fixes" it because
+      it creates a new event loop — but that's not acceptable.
+
+      The correct solution: run ALL async operations in a DEDICATED
+      background thread with its own event loop. The main thread stays
+      synchronously clean. asyncio.run_coroutine_threadsafe() correctly
+      propagates exceptions (unlike nest_asyncio + run_until_complete).
+
+    USAGE:
+      runner = AsyncRunner()
+      result = runner.run(some_async_fn())   # blocks until done
+      runner.stop()                           # on shutdown
+    """
+
+    def __init__(self):
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._run_forever,
+            daemon=True,
+            name="hashed-async-runner",
+        )
+        self._thread.start()
+
+    def _run_forever(self) -> None:
+        """Entry point for background thread — runs event loop forever."""
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def run(self, coro, timeout: float = 30.0):
+        """
+        Submit a coroutine to the dedicated loop and block until result.
+
+        Correctly propagates ALL exceptions (including PolicyViolationError)
+        to the calling thread — no belt-and-suspenders needed.
+        """
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=timeout)
+
+    def stop(self) -> None:
+        """Stop the background event loop and thread."""
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=5)
 
 
 # =============================================================================
@@ -71,7 +132,7 @@ class ToolCallRecord:
 @dataclass
 class ChatResponse:
     """Structured response from a single chat turn."""
-    message: str                             # The agent's text response
+    message: str
     tool_calls: list[ToolCallRecord] = field(default_factory=list)
     run_id: Optional[str] = None
     agent_id: Optional[str] = None
@@ -98,22 +159,24 @@ class MAFAgent:
     """
     Reusable MAF Research Agent.
 
+    v2: Fully synchronous public API — no asyncio.run() needed from callers.
+    Internally uses AsyncRunner for all Hashed SDK operations.
+
     Usage:
         agent = MAFAgent()
-        asyncio.run(agent.initialize())
+        agent.initialize()                      # ← sync now
 
         response = agent.chat("Compare MAF and LangChain")
         print(response.message)
-        for tc in response.tool_calls:
-            print(f"  Used: {tc.name}")
 
-        asyncio.run(agent.shutdown())
+        agent.shutdown()                        # ← sync now
 
     Thread safety: Not thread-safe. Use one instance per user session.
     For multi-user: create one MAFAgent per session (Streamlit session_state).
     """
 
     def __init__(self):
+        self._runner: Optional[AsyncRunner] = None
         self.core: Optional[HashedCore] = None
         self.client: Optional[AgentsClient] = None
         self.agent_id: Optional[str] = None
@@ -125,23 +188,25 @@ class MAFAgent:
 
     # ── 1. Initialization ─────────────────────────────────────────────────────
 
-    async def initialize(self) -> None:
+    def initialize(self) -> None:
         """
-        Full initialization:
-          1. Hashed identity + policies
-          2. Azure AI Agents client
-          3. Create persistent agent on Azure
+        Full synchronous initialization:
+          1. Start dedicated async runner (background thread)
+          2. Hashed identity + policies (run in dedicated loop)
+          3. Azure AI Agents client (sync)
+          4. Create persistent agent on Azure (sync)
         """
-        await self._setup_hashed()
-        await self._configure_policies()
+        self._runner = AsyncRunner()
+        self._setup_hashed()
+        self._configure_policies()
         self._setup_azure_client()
         self._build_toolset()
         self._create_azure_agent()
         self._initialized = True
 
-    async def _setup_hashed(self) -> None:
+    def _setup_hashed(self) -> None:
         """
-        Load identity and initialize Hashed Core.
+        Load identity and initialize Hashed Core in the dedicated runner.
 
         PEM PERSISTENCE STRATEGY:
           The PEM file is the cryptographic identity of the agent.
@@ -153,18 +218,14 @@ class MAFAgent:
             1. HASHED_PEM_B64 env var (Azure Secret, production)
             2. Local file ./secrets/maf_research_agent.pem (dev/local)
         """
-        import base64
-
         password = os.getenv("HASHED_IDENTITY_PASSWORD", "changeme")
 
         pem_b64 = os.getenv("HASHED_PEM_B64")
         if pem_b64:
-            # Production: write PEM from Azure Secret to /tmp
             pem_path = "/tmp/maf_research_agent.pem"
             with open(pem_path, "wb") as f:
                 f.write(base64.b64decode(pem_b64))
         else:
-            # Development: use local file (will create if missing)
             pem_path = "./secrets/maf_research_agent.pem"
 
         identity = load_or_create_identity(pem_path, password)
@@ -175,9 +236,10 @@ class MAFAgent:
             agent_name="MAF Research Agent",
             agent_type="research",
         )
-        await self.core.initialize()
+        # Run async initialize in the dedicated loop
+        self._runner.run(self.core.initialize())
 
-    async def _configure_policies(self) -> None:
+    def _configure_policies(self) -> None:
         """Add policies to the Hashed policy engine."""
         policy_config = [
             ("search_web",         True,  {"max_per_hour": 20,  "risk": "low"}),
@@ -194,79 +256,42 @@ class MAFAgent:
 
         # Sync with backend — non-fatal if it fails
         try:
-            await self.core.push_policies_to_backend()
+            self._runner.run(self.core.push_policies_to_backend())
         except Exception:
             pass  # Local policies still work
 
     def _setup_azure_client(self) -> None:
-        """
-        Create the Azure AI Agents client.
-
-        Auth strategy:
-          - In Container Apps: uses System-assigned Managed Identity automatically
-            (DefaultAzureCredential picks up the MI token from the IMDS endpoint)
-          - Locally: uses 'az login' credentials via AzureCliCredential
-          - DefaultAzureCredential tries both in order — no config needed
-
-        To enable Managed Identity, run once:
-          az containerapp identity assign --name maf-research-agent \
-              --resource-group juan-rg-foundry --system-assigned
-
-        Then assign the role:
-          az role assignment create \
-              --assignee <principalId> \
-              --role "Cognitive Services User" \
-              --scope /subscriptions/.../resourceGroups/juan-rg-foundry
-        """
+        """Create the Azure AI Agents client (synchronous)."""
         endpoint = os.getenv("AZURE_AI_AGENTS_ENDPOINT")
         if not endpoint:
             raise ValueError(
                 "AZURE_AI_AGENTS_ENDPOINT not set in .env\n"
                 "Get it from: ai.azure.com → Your Project → Overview"
             )
-
-        # DefaultAzureCredential automatically uses:
-        #   1. Managed Identity (when running in Container Apps with MI enabled)
-        #   2. AzureCliCredential (when running locally with az login)
-        #   3. Environment variables (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)
-        credential = DefaultAzureCredential()
-
         self.client = AgentsClient(
             endpoint=endpoint,
-            credential=credential,
+            credential=DefaultAzureCredential(),
         )
 
     def _build_toolset(self) -> None:
         """
-        Activate Hashed guards and wrap async tools into sync functions
-        for the Azure AI Agents FunctionTool.
+        Activate Hashed guards and build sync wrappers for Azure AI Agents.
 
-        PATTERN (same as Hashed template):
-          tools.init_tools(core)    ← activates @_guard decorators
-          from tools import TOOLS   ← module-level guarded functions
-
-        Then we create sync wrappers because Azure SDK dispatches
-        tool calls synchronously — bridged via asyncio event loop.
+        v2 SIMPLIFICATION vs v1:
+          - No nest_asyncio
+          - No loop.run_until_complete()
+          - Uses self._runner.run() — dedicated background loop
+          - asyncio.run_coroutine_threadsafe() correctly propagates exceptions
+          - Denied tools use simple try/except (no belt-and-suspenders!)
+          - No asyncio.sleep(0.2) WAL flush hack needed
         """
         if self.core is None:
             raise RuntimeError("Hashed core not initialized")
 
-        # ── Activate @_guard decorators (equivalent to @core.guard()) ─────────
+        # Activate @_guard decorators on all tools
         init_tools(self.core)
-        loop = asyncio.get_event_loop()
 
-        # ── Sync wrappers — Azure SDK needs synchronous callables ─────────────
-        # Each wrapper calls the async @_guard-decorated function via event loop.
-        # The Hashed guard runs inside the async function before executing.
-        #
-        # NOTE on denial WAL flush:
-        #   For denied tools, we use TWO separate loop.run_until_complete() calls:
-        #   1st: the guarded tool call (raises exception on denial)
-        #   2nd: asyncio.sleep() to pump the event loop and flush WAL to backend
-        #
-        #   We do NOT use asyncio.sleep() inside the except block of an async
-        #   function, because nest_asyncio + raise-after-await can swallow
-        #   the exception, causing the denial to appear as a success.
+        # ── Tool wrappers — use runner for async Hashed calls ─────────────────
 
         def search_web(query: str) -> str:
             """
@@ -277,7 +302,7 @@ class MAFAgent:
             Returns:
                 str: Search results
             """
-            result = loop.run_until_complete(TOOLS["search_web"](query))
+            result = self._runner.run(TOOLS["search_web"](query))
             lines = "\n".join(f"• {r}" for r in result["results"])
             return f"Search results for '{query}':\n{lines}"
 
@@ -290,7 +315,7 @@ class MAFAgent:
             Returns:
                 str: Structured analysis
             """
-            result = loop.run_until_complete(TOOLS["analyze_data"](topic, depth))
+            result = self._runner.run(TOOLS["analyze_data"](topic, depth))
             a = result["analysis"]
             return (
                 f"Analysis of '{topic}':\n"
@@ -309,7 +334,7 @@ class MAFAgent:
             Returns:
                 str: Complete Markdown report
             """
-            result = loop.run_until_complete(TOOLS["generate_report"](title, content_summary))
+            result = self._runner.run(TOOLS["generate_report"](title, content_summary))
             return result["report_markdown"]
 
         def compare_frameworks(framework_a: str, framework_b: str) -> str:
@@ -322,7 +347,7 @@ class MAFAgent:
             Returns:
                 str: Comparison with scores and verdict
             """
-            result = loop.run_until_complete(TOOLS["compare_frameworks"](framework_a, framework_b))
+            result = self._runner.run(TOOLS["compare_frameworks"](framework_a, framework_b))
             return (
                 f"Framework comparison: {framework_a} vs {framework_b}\n"
                 f"  Score {framework_a}: {result['scores'][framework_a]}/{result['max_score']}\n"
@@ -342,28 +367,14 @@ class MAFAgent:
             Returns:
                 str: Result or denial message
             """
-            # 1. Call guarded tool → this LOGS the attempt to Hashed backend
-            #    Note: with nest_asyncio, PolicyViolationError may not propagate
-            #    correctly from run_until_complete — we handle this in step 3.
+            # v2: simple try/except works correctly with AsyncRunner.
+            # run_coroutine_threadsafe() propagates PolicyViolationError to this thread.
+            # No belt-and-suspenders needed — the exception arrives reliably.
             try:
-                loop.run_until_complete(TOOLS["send_email"](to=to, subject=subject, body=body))
-            except Exception:
-                pass  # Exception may or may not propagate — handled below
-
-            # 2. Pump event loop → gives Hashed WAL time to flush denial to backend
-            try:
-                loop.run_until_complete(asyncio.sleep(0.2))
-            except Exception:
-                pass
-
-            # 3. Belt-and-suspenders: check LOCAL policy config
-            #    This catches the case where nest_asyncio swallows the exception
-            #    but the guard has already logged the denial to the backend.
-            policy = next((p for p in self.policies if p.name == "send_email"), None)
-            if policy and not policy.allowed:
-                return "Action denied by security policy: send_email is not permitted (policy: denied)"
-
-            return f"Email sent to {to}: {subject}"
+                self._runner.run(TOOLS["send_email"](to=to, subject=subject, body=body))
+                return f"Email sent to {to}: {subject}"
+            except Exception as e:
+                return f"Action denied by security policy: send_email is not permitted ({e})"
 
         def delete_data(target: str) -> str:
             """
@@ -374,24 +385,11 @@ class MAFAgent:
             Returns:
                 str: Result or denial message
             """
-            # 1. Call guarded tool → logs to Hashed backend
             try:
-                loop.run_until_complete(TOOLS["delete_data"](target=target))
-            except Exception:
-                pass
-
-            # 2. WAL flush
-            try:
-                loop.run_until_complete(asyncio.sleep(0.2))
-            except Exception:
-                pass
-
-            # 3. Local policy check (belt-and-suspenders)
-            policy = next((p for p in self.policies if p.name == "delete_data"), None)
-            if policy and not policy.allowed:
-                return "Action denied by security policy: delete_data is not permitted (policy: denied)"
-
-            return f"Deleted: {target}"
+                self._runner.run(TOOLS["delete_data"](target=target))
+                return f"Deleted: {target}"
+            except Exception as e:
+                return f"Action denied by security policy: delete_data is not permitted ({e})"
 
         function_tool = FunctionTool(
             functions={search_web, analyze_data, generate_report, compare_frameworks, send_email, delete_data}
@@ -405,10 +403,7 @@ class MAFAgent:
                 self.fn_registry.update(tool._functions)
 
     def _create_azure_agent(self) -> None:
-        """
-        Create the agent on Azure Foundry.
-        In production: reuse if already created (store agent_id in DB or env).
-        """
+        """Create the agent on Azure Foundry."""
         azure_agent = self.client.create_agent(
             model=self.model,
             name="MAF-Research-Agent",
@@ -447,9 +442,7 @@ Security: All operations are cryptographically monitored and enforced by Hashed 
     def chat(self, message: str) -> ChatResponse:
         """
         Send a message and get a structured response.
-
-        This is the main method to call from any interface.
-        It handles the full Azure AI Agents run loop with tool dispatch.
+        Fully synchronous — no asyncio.run() needed from caller.
 
         Args:
             message: The user's message
@@ -466,7 +459,6 @@ Security: All operations are cryptographically monitored and enforced by Hashed 
         tool_calls_made: list[ToolCallRecord] = []
 
         try:
-            # Create thread + message
             thread = self.client.threads.create()
             self.client.messages.create(
                 thread_id=thread.id,
@@ -474,13 +466,11 @@ Security: All operations are cryptographically monitored and enforced by Hashed 
                 content=message,
             )
 
-            # Start run
             run = self.client.runs.create(
                 thread_id=thread.id,
                 agent_id=self.agent_id,
             )
 
-            # Poll loop
             poll_interval = 1.0
             max_wait = 120
             elapsed = 0
@@ -507,8 +497,6 @@ Security: All operations are cryptographically monitored and enforced by Hashed 
                             try:
                                 output = self.fn_registry[fn_name](**fn_args)
                                 record.output = str(output)
-                                # Denied tools return a string starting with "Action denied"
-                                # (they catch the exception internally to return gracefully)
                                 if str(output).startswith("Action denied by security policy"):
                                     record.allowed = False
                                     record.error = str(output)
@@ -538,7 +526,6 @@ Security: All operations are cryptographically monitored and enforced by Hashed 
                     elapsed += poll_interval
                     run = self.client.runs.get(thread_id=thread.id, run_id=run.id)
 
-            # Check failure
             if run.status == RunStatus.FAILED:
                 error_msg = str(getattr(run, "last_error", "Unknown error"))
                 return ChatResponse(
@@ -550,7 +537,6 @@ Security: All operations are cryptographically monitored and enforced by Hashed 
                     model=self.model,
                 )
 
-            # Extract response
             messages = self.client.messages.list(thread_id=thread.id, order="desc")
             for msg in messages:
                 if msg.role == MessageRole.AGENT:
@@ -581,13 +567,12 @@ Security: All operations are cryptographically monitored and enforced by Hashed 
 
     # ── 3. Shutdown ────────────────────────────────────────────────────────────
 
-    async def shutdown(self, delete_agent: bool = False) -> None:
+    def shutdown(self, delete_agent: bool = False) -> None:
         """
-        Clean up resources.
+        Clean up resources (synchronous in v2).
 
         Args:
-            delete_agent: If True, delete the Azure agent (use for cleanup only).
-                          In production, keep agents alive to avoid re-creation cost.
+            delete_agent: If True, delete the Azure agent.
         """
         if self.client and self.agent_id and delete_agent:
             try:
@@ -595,8 +580,15 @@ Security: All operations are cryptographically monitored and enforced by Hashed 
             except Exception:
                 pass
 
-        if self.core:
-            await self.core.shutdown()
+        if self.core and self._runner:
+            try:
+                self._runner.run(self.core.shutdown(), timeout=10)
+            except Exception:
+                pass
+
+        if self._runner:
+            self._runner.stop()
+            self._runner = None
 
         self._initialized = False
 
