@@ -18,6 +18,7 @@ LEARNING VALUE:
   - You can SEE the Azure AI Agents run loop happening
 """
 
+import asyncio
 from typing import Optional
 
 import streamlit as st
@@ -65,7 +66,7 @@ def initialize_agent() -> None:
     st.session_state.init_error = None
     try:
         agent = MAFAgent()
-        agent.initialize()          # sync in v2 — no asyncio.run() needed
+        asyncio.run(agent.initialize())
         st.session_state.agent = agent
     except Exception as e:
         st.session_state.init_error = str(e)
@@ -140,7 +141,7 @@ def render_sidebar(agent: Optional[MAFAgent]) -> None:
         if st.button("🔄 Restart Agent", use_container_width=True):
             if st.session_state.agent:
                 try:
-                    st.session_state.agent.shutdown(delete_agent=True)  # sync in v2
+                    asyncio.run(st.session_state.agent.shutdown(delete_agent=True))
                 except Exception:
                     pass
             st.session_state.agent = None
