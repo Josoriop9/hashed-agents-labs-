@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Environment variables (NEVER commit secrets)
+.env
+labs-hashed/**/.env
+secrets/
+labs-hashed/**/secrets/
+*.pem
+
+# Hashed local state
+.hashed_policies.json
+.hashed_wal.db
+labs-hashed/**/.hashed_policies.json
+labs-hashed/**/.hashed_wal.db
+
+# ─── HASHED SDK DEVELOPER NOTES ───────────────────────────────────────────────
+# This folder contains raw developer notes and feedback for the Hashed SDK.
+# It will be moved to the Hashed repo — not part of the course repo.
+hashed-sdk-notes/
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+
+# Azure / Cloud
+*.tfstate
+*.tfstate.backup

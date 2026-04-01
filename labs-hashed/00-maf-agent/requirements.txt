@@ -1,0 +1,21 @@
+# MAF Research Agent — Dependencies
+# ===================================
+
+# Azure AI Agents SDK (Azure Foundry Agent Service)
+azure-ai-agents>=1.1.0
+
+# Azure identity (AzureKeyCredential + AzureCliCredential)
+azure-core>=1.30.0
+azure-identity>=1.15.0
+
+# Hashed SDK — Security layer (https://pypi.org/project/hashed-sdk/)
+hashed-sdk
+
+# Environment variables
+python-dotenv
+
+# Async nested event loops (needed to bridge sync Azure SDK + async Hashed)
+nest-asyncio
+
+# Streamlit UI
+streamlit>=1.32.0
