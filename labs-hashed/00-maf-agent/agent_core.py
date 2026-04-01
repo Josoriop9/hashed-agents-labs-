@@ -109,6 +109,31 @@ class AsyncRunner:
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result(timeout=timeout)
 
+    def run_with_flush(self, coro, flush_delay: float = 0.05, timeout: float = 30.0):
+        """
+        Run coroutine AND yield to the event loop to let WAL flush.
+
+        WHY THIS IS NEEDED:
+          The Hashed guard writes to the WAL as an asyncio background Task.
+          run_coroutine_threadsafe().result() returns as soon as the GUARD
+          coroutine completes, but the WAL write Task is still pending in
+          the queue. Without a yield (asyncio.sleep), the WAL task never
+          gets a chance to execute before the caller checks hashed logs list.
+
+          The inner asyncio.sleep(flush_delay) yields control back to the
+          dedicated loop, allowing all pending tasks (WAL writes, backend
+          flush) to execute before we return to the sync caller.
+
+          flush_delay=0.05s is enough for local WAL write + HTTP to backend.
+        """
+        async def _with_flush():
+            result = await coro
+            await asyncio.sleep(flush_delay)  # yield → WAL tasks execute
+            return result
+
+        future = asyncio.run_coroutine_threadsafe(_with_flush(), self._loop)
+        return future.result(timeout=timeout)
+
     def stop(self) -> None:
         """Stop the background event loop and thread."""
         self._loop.call_soon_threadsafe(self._loop.stop)
@@ -302,7 +327,7 @@ class MAFAgent:
             Returns:
                 str: Search results
             """
-            result = self._runner.run(TOOLS["search_web"](query))
+            result = self._runner.run_with_flush(TOOLS["search_web"](query))
             lines = "\n".join(f"• {r}" for r in result["results"])
             return f"Search results for '{query}':\n{lines}"
 
@@ -315,7 +340,7 @@ class MAFAgent:
             Returns:
                 str: Structured analysis
             """
-            result = self._runner.run(TOOLS["analyze_data"](topic, depth))
+            result = self._runner.run_with_flush(TOOLS["analyze_data"](topic, depth))
             a = result["analysis"]
             return (
                 f"Analysis of '{topic}':\n"
@@ -334,7 +359,7 @@ class MAFAgent:
             Returns:
                 str: Complete Markdown report
             """
-            result = self._runner.run(TOOLS["generate_report"](title, content_summary))
+            result = self._runner.run_with_flush(TOOLS["generate_report"](title, content_summary))
             return result["report_markdown"]
 
         def compare_frameworks(framework_a: str, framework_b: str) -> str:
@@ -347,7 +372,7 @@ class MAFAgent:
             Returns:
                 str: Comparison with scores and verdict
             """
-            result = self._runner.run(TOOLS["compare_frameworks"](framework_a, framework_b))
+            result = self._runner.run_with_flush(TOOLS["compare_frameworks"](framework_a, framework_b))
             return (
                 f"Framework comparison: {framework_a} vs {framework_b}\n"
                 f"  Score {framework_a}: {result['scores'][framework_a]}/{result['max_score']}\n"
@@ -371,7 +396,7 @@ class MAFAgent:
             # run_coroutine_threadsafe() propagates PolicyViolationError to this thread.
             # No belt-and-suspenders needed — the exception arrives reliably.
             try:
-                self._runner.run(TOOLS["send_email"](to=to, subject=subject, body=body))
+                self._runner.run_with_flush(TOOLS["send_email"](to=to, subject=subject, body=body))
                 return f"Email sent to {to}: {subject}"
             except Exception as e:
                 return f"Action denied by security policy: send_email is not permitted ({e})"
@@ -386,7 +411,7 @@ class MAFAgent:
                 str: Result or denial message
             """
             try:
-                self._runner.run(TOOLS["delete_data"](target=target))
+                self._runner.run_with_flush(TOOLS["delete_data"](target=target))
                 return f"Deleted: {target}"
             except Exception as e:
                 return f"Action denied by security policy: delete_data is not permitted ({e})"
