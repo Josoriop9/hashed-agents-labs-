@@ -2,7 +2,7 @@
 
 > A progressive series of hands-on labs for building AI agents with **real security and observability** — not just prompts.
 
-Every lab uses **[Hashed SDK](https://hashed.io)** as the security layer: cryptographic agent identity, policy-based tool enforcement, and a complete audit trail of every tool call.
+Every lab uses **[Hashed SDK](https://github.com/Josoriop9/IAMandagent)** as the security layer: cryptographic agent identity, policy-based tool enforcement, and a complete audit trail of every tool call.
 
 ---
 
