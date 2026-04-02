@@ -24,6 +24,10 @@ labs-hashed/**/.hashed_wal.db
 # It will be moved to the Hashed repo — not part of the course repo.
 hashed-sdk-notes/
 
+# Notas privadas de deploy (credenciales reales, comandos de infra)
+DEPLOY-NOTES.md
+labs-hashed/**/DEPLOY-NOTES.md
+
 # macOS
 .DS_Store
 .AppleDouble
