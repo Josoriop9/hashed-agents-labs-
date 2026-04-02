@@ -33,7 +33,7 @@ After completing these labs, you will be able to:
 ### 1. Install Hashed CLI
 ```bash
 pip install hashed-sdk
-hashed login  # get your API key from hashed.io
+hashed login  # get your API key from github.com/Josoriop9/IAMandagent
 ```
 
 ### 2. Required env vars

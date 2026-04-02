@@ -53,7 +53,7 @@ pip install hashed-sdk
 hashed login
 ```
 
-Get your API key at [hashed.io](https://hashed.io).
+Get your API key at [github.com/Josoriop9/IAMandagent](https://github.com/Josoriop9/IAMandagent).
 
 ### 2. Required env vars (all labs)
 
@@ -71,8 +71,8 @@ Each lab has its own additional vars. See the lab's `.env.example`.
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/ai-agents-labs.git
-cd ai-agents-labs/labs-hashed/00-maf-agent
+git clone https://github.com/Josoriop9/hashed-agents-labs-.git
+cd hashed-agents-labs-/labs-hashed/00-maf-agent
 
 # Environment
 cp .env.example .env
