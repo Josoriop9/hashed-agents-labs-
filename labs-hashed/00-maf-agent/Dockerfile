@@ -3,7 +3,7 @@
 #
 # Deploy to Azure Container Apps (GA — no Docker local needed):
 #   az containerapp up --name maf-research-agent \
-#     --resource-group juan-rg-foundry --source .
+#     --resource-group <your-resource-group> --source .
 #
 # Run locally (if Docker is installed):
 #   docker build -t maf-research-agent .

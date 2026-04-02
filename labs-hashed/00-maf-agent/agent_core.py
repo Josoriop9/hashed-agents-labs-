@@ -210,13 +210,13 @@ class MAFAgent:
 
         To enable Managed Identity, run once:
           az containerapp identity assign --name maf-research-agent \
-              --resource-group juan-rg-foundry --system-assigned
+              --resource-group <your-resource-group> --system-assigned
 
         Then assign the role:
           az role assignment create \
               --assignee <principalId> \
               --role "Cognitive Services User" \
-              --scope /subscriptions/.../resourceGroups/juan-rg-foundry
+              --scope /subscriptions/.../resourceGroups/<your-resource-group>
         """
         endpoint = os.getenv("AZURE_AI_AGENTS_ENDPOINT")
         if not endpoint:

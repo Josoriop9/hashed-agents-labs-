@@ -289,7 +289,7 @@ hashed logs list
 # Problem: Container is using a different PEM (new identity)
 # Fix: Ensure HASHED_PEM_B64 env var is set correctly
 az containerapp show --name maf-research-agent \
-    --resource-group juan-rg-foundry \
+    --resource-group <your-resource-group> \
     --query "properties.template.containers[0].env"
 ```
 
