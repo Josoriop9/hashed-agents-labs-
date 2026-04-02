@@ -21,10 +21,12 @@
 set -e
 
 # ── Config ────────────────────────────────────────────────────────
-RESOURCE_GROUP="juan-rg-foundry"
-LOCATION="swedencentral"
-CONTAINER_APP_NAME="maf-research-agent"
-ENVIRONMENT_NAME="maf-agent-env"
+# Override any of these via .env or environment variables:
+#   AZURE_RESOURCE_GROUP=my-rg  ./deploy/deploy.sh
+RESOURCE_GROUP="${AZURE_RESOURCE_GROUP:-my-resource-group}"
+LOCATION="${AZURE_LOCATION:-swedencentral}"
+CONTAINER_APP_NAME="${AZURE_CONTAINER_APP_NAME:-maf-research-agent}"
+ENVIRONMENT_NAME="${AZURE_ENVIRONMENT_NAME:-maf-agent-env}"
 SOURCE_DIR="$(cd "$(dirname "$0")/.." && pwd)"  # maf-agent/ directory
 
 echo ""
