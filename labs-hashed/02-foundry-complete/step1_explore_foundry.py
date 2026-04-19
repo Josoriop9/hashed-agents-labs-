@@ -29,6 +29,7 @@ import os
 
 from azure.ai.projects.aio import AIProjectClient
 from azure.core.credentials import AzureKeyCredential
+from azure.identity.aio import DefaultAzureCredential
 from dotenv import load_dotenv
 
 # rich: output bonito con tablas y colores
@@ -186,20 +187,26 @@ async def explorar_modelos(client: AIProjectClient) -> None:
     print()
     info("Cómo ver modelos disponibles en tu proyecto:")
     info("  ai.azure.com → tu proyecto → Models + endpoints → Deployments")
-    info()
+    print()
     info("Cómo deployear un modelo nuevo:")
     info("  ai.azure.com → tu proyecto → Models + endpoints → + Deploy model")
     info("  → Model catalog → busca gpt-4o, Phi-3.5, DeepSeek, etc.")
 
 
-async def explorar_agentes_existentes(client: AIProjectClient) -> None:
+async def explorar_agentes_existentes(endpoint: str, credential) -> None:
     """
     Lista los agentes que ya existen en el proyecto.
 
     IMPORTANTE: Los agentes en Foundry son PERSISTENTES.
     Cada vez que creas un agente, queda guardado en Azure con su agent_id.
     En producción, reutilizas el agent_id en lugar de crear uno nuevo cada vez.
+
+    AUTH: azure-ai-agents >= 1.1.0 requiere OAuth (no API key).
+    Usamos DefaultAzureCredential → funciona con `az login` en desarrollo,
+    y con Managed Identity / Service Principal en producción.
     """
+    from azure.ai.agents.aio import AgentsClient
+
     section("4. AGENTES EXISTENTES EN FOUNDRY AGENT SERVICE")
     print()
     info("Los agentes en Foundry son PERSISTENTES — viven en Azure.")
@@ -207,12 +214,13 @@ async def explorar_agentes_existentes(client: AIProjectClient) -> None:
     print()
 
     try:
-        # Acceder al Agent Service a través de AIProjectClient
-        agents_client = client.agents
-
-        agents = []
-        async for agent in agents_client.list_agents():
-            agents.append(agent)
+        async with AgentsClient(
+            endpoint=endpoint,
+            credential=credential,
+        ) as agents_client:
+            agents = []
+            async for agent in agents_client.list_agents():
+                agents.append(agent)
 
         if not agents:
             info("No hay agentes creados en este proyecto todavía.")
@@ -252,26 +260,43 @@ async def main():
         print("=" * 60)
 
     endpoint = os.getenv("FOUNDRY_PROJECT_ENDPOINT")
-    api_key  = os.getenv("AZURE_AI_AGENTS_KEY")
 
-    if not endpoint or not api_key:
-        print("❌ Falta FOUNDRY_PROJECT_ENDPOINT o AZURE_AI_AGENTS_KEY en .env")
+    if not endpoint:
+        print("❌ Falta FOUNDRY_PROJECT_ENDPOINT en .env")
         return
 
-    # ── AIProjectClient ───────────────────────────────────────────────────────
+    # ── AUTH: DefaultAzureCredential ──────────────────────────────────────────
     #
-    # Este es el cliente principal para EXPLORAR Foundry.
-    # NO es para hacer inferencia (llamar al LLM) — eso lo hace MAF o InferenceClient.
-    # SÍ es para: connections, model deployments, datasets, evaluations, agents.
+    # azure-ai-projects >= 2.0 y azure-ai-agents >= 1.1 usan OAuth (no API key).
+    # DefaultAzureCredential intenta en orden:
+    #   1. AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID (env vars)
+    #   2. az login  ← lo más fácil para desarrollo local
+    #   3. Managed Identity (cuando corre en Azure)
+    #
+    # Si no has corrido `az login`, corre: az login --use-device-code
+    #
+    # La API key (AZURE_AI_AGENTS_KEY) la sigue usando Hashed SDK y
+    # azure-ai-inference directo, pero NO para AIProjectClient ni AgentsClient.
 
-    async with AIProjectClient(
-        endpoint=endpoint,
-        credential=AzureKeyCredential(api_key),
-    ) as client:
-        await explorar_proyecto(client)
-        await explorar_connections(client)
-        await explorar_modelos(client)
-        await explorar_agentes_existentes(client)
+    # async with → cierra la sesión HTTP de DefaultAzureCredential al salir
+    async with DefaultAzureCredential() as credential:
+
+        # ── AIProjectClient ───────────────────────────────────────────────────
+        #
+        # Este es el cliente principal para EXPLORAR Foundry.
+        # NO es para hacer inferencia (llamar al LLM) — eso lo hace MAF o InferenceClient.
+        # SÍ es para: connections, model deployments, datasets, evaluations, agents.
+
+        async with AIProjectClient(
+            endpoint=endpoint,
+            credential=credential,
+        ) as client:
+            await explorar_proyecto(client)
+            await explorar_connections(client)
+            await explorar_modelos(client)
+
+        # AgentsClient: también requiere OAuth en versión 1.1.0+
+        await explorar_agentes_existentes(endpoint, credential)
 
     # ── Resumen de la arquitectura ────────────────────────────────────────────
     section("RESUMEN: EL PUZZLE DE FOUNDRY")

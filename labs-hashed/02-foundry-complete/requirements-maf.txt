@@ -1,0 +1,7 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# MAF — Microsoft Agent Framework (pre-release)
+# Instalar con: pip install --pre -r requirements-maf.txt
+# NO está en el índice estable de PyPI — requiere --pre
+# ══════════════════════════════════════════════════════════════════════════════
+agent-framework
+agent-framework-azure-ai

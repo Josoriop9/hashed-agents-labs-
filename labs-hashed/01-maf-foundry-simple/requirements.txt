@@ -1,8 +1,10 @@
-# ── Microsoft Agent Framework ─────────────────────────────────────────────────
-agent-framework>=0.1.0
-agent-framework-azure-ai>=0.1.0          # FoundryChatClient + FoundryMemoryProvider
+# ══════════════════════════════════════════════════════════════════════════════
+# Lab 01 — MAF + Foundry Simple
+# INSTALACIÓN: usa install.sh, NO instales este archivo directamente con pip
+#   ./install.sh
+# ══════════════════════════════════════════════════════════════════════════════
 
-# ── Azure ─────────────────────────────────────────────────────────────────────
+# ── Azure AI Foundry ──────────────────────────────────────────────────────────
 azure-ai-projects>=1.0.0b9
 azure-identity>=1.20.0
 

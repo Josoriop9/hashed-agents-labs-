@@ -1,20 +1,18 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # Lab 02 — Foundry Complete
-# Todas las capas del stack de Foundry + MAF + Hashed
+# INSTALACIÓN: usa install.sh, NO instales este archivo directamente con pip
+#   ./install.sh
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── MAF (capa pro-code de orquestación) ───────────────────────────────────────
-agent-framework>=0.1.0
-agent-framework-azure-ai>=0.1.0          # FoundryChatClient, FoundryMemoryProvider
-
 # ── Azure AI Foundry Platform ─────────────────────────────────────────────────
-azure-ai-projects>=1.0.0b9               # AIProjectClient: connections, models, deployments
-azure-ai-agents>=1.0.0                   # AgentsClient: Code Interpreter, File Search, MCP
-azure-ai-inference>=1.0.0b9              # InferenceClient: llamar modelos directamente
-azure-ai-evaluation>=1.0.0b10            # Evaluations: coherencia, relevancia, groundedness
+azure-ai-projects>=1.0.0b9
+azure-ai-agents>=1.0.0
+azure-ai-inference>=1.0.0b9
+azure-ai-evaluation>=1.0.0b10
 
 # ── Autenticación ─────────────────────────────────────────────────────────────
 azure-identity>=1.20.0
+azure-core>=1.30.0
 
 # ── Hashed SDK ────────────────────────────────────────────────────────────────
 hashed-sdk>=0.3.4
@@ -22,4 +20,4 @@ hashed-sdk>=0.3.4
 # ── Utilidades ────────────────────────────────────────────────────────────────
 python-dotenv>=1.0.0
 pydantic>=2.0.0
-rich>=13.0.0                             # Tablas y output bonito para el lab
+rich>=13.0.0
