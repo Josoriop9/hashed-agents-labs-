@@ -1,0 +1,13 @@
+# ── Microsoft Agent Framework ─────────────────────────────────────────────────
+agent-framework>=0.1.0
+agent-framework-azure-ai>=0.1.0          # FoundryChatClient + FoundryMemoryProvider
+
+# ── Azure ─────────────────────────────────────────────────────────────────────
+azure-ai-projects>=1.0.0b9
+azure-identity>=1.20.0
+
+# ── Hashed SDK ────────────────────────────────────────────────────────────────
+hashed-sdk>=0.3.4
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
